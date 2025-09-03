@@ -90,14 +90,15 @@ def create_feature_correlation_heatmap(df):
     return fig
 
 # Streamlit app
-#st.title('Testing Application for Property Recommendation System')
+st.title('Aplikasi Rekomendasi Properti Jogja')
 
 # Sidebar untuk navigasi
 st.sidebar.title("Menu")
 page = st.sidebar.radio("Pilih Halaman", ["Chat", "Distribusi Harga", "Lokasi Populer", "Korelasi Fitur", "Seluruh Data"])
 
 if page == "Chat":
-    st.header("Testing Application ML model for Property Recommendation System")
+    st.header("Chat Rekomendasi Properti")
+    
     # Chat-like interface
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -208,3 +209,7 @@ elif page == "Seluruh Data":
             st.image(image_link, caption=selected_property)
         else:
             st.write("Gambar tidak tersedia untuk properti ini.")
+
+# Footer
+st.markdown("---")
+st.markdown("Dibuat dengan ❤️ menggunakan Streamlit")

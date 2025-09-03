@@ -6,7 +6,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
 # from tensorflow.keras.preprocessing.sequence import pad_sequences
-# from tensorflow.keras.preprocessing.text import Tokenizer
+from tensorflow.keras.preprocessing.text import Tokenizer
 from Sastrawi.Stemmer.StemmerFactory import StemmerFactory
 from Sastrawi.StopWordRemover.StopWordRemoverFactory import StopWordRemoverFactory
 from fuzzywuzzy import fuzz
@@ -31,39 +31,23 @@ class PropertyRAG:
             self.df["text_combined"].fillna("").astype(str)
         )
 
-        # Prepare numeric features (aligned with current training: NO raw Harga_Normalized to avoid leakage)
-        # Safe division to avoid inf/NaN
-        def safe_div(a, b):
-            a = a.astype(float)
-            b = b.astype(float)
-            with np.errstate(divide="ignore", invalid="ignore"):
-                res = np.where(b == 0, np.nan, a / b)
-            return res
-
-        kamar_n = df["Kamar_Normalized"].values
-        wc_n = df["WC_Normalized"].values
-        parkir_n = df["Parkir_Normalized"].values
-        lt_n = df["Luas_Tanah_Normalized"].values
-        lb_n = df["Luas_Bangunan_Normalized"].values
-
-        harga_per_lb = safe_div(df["Harga_Normalized"].values, lb_n)
-        lb_per_lt = safe_div(lb_n, lt_n)
-        kamar_x_wc = kamar_n * wc_n
-
-        numeric_stack = [kamar_n, wc_n, parkir_n, lt_n, lb_n, harga_per_lb, lb_per_lt, kamar_x_wc]
-        self.numeric_features = np.column_stack(numeric_stack)
-
-        # Drop rows with NaN created by division by zero for internal matrix (recommendation ranking)
-        if np.isnan(self.numeric_features).any():
-            valid_mask = ~np.isnan(self.numeric_features).any(axis=1)
-            dropped = (~valid_mask).sum()
-            if dropped > 0:
-                logging.warning(f"Dropping {dropped} rows with NaN numeric features (division by zero).")
-            self.df = self.df.loc[valid_mask].reset_index(drop=True)
-            self.tfidf_matrix = self.tfidf_vectorizer.transform(
-                self.df["text_combined"].fillna("").astype(str)
-            )
-            self.numeric_features = self.numeric_features[valid_mask]
+        # Prepare numeric features (same as in training)
+        self.numeric_features = np.column_stack(
+            [
+                df[
+                    [
+                        "Kamar_Normalized",
+                        "WC_Normalized",
+                        "Parkir_Normalized",
+                        "Luas_Tanah_Normalized",
+                        "Luas_Bangunan_Normalized",
+                    ]
+                ].values,
+                df["Harga_Normalized"] / df["Luas_Bangunan_Normalized"],
+                df["Luas_Bangunan_Normalized"] / df["Luas_Tanah_Normalized"],
+                df["Kamar_Normalized"] * df["WC_Normalized"],
+            ]
+        )
 
         # Pemetaan lokasi dan fasilitas
         self.location_mapping = {
@@ -203,7 +187,7 @@ class PropertyRAG:
             return 0.7
         else:
             return 0.3
-        
+
     def preprocess_query(self, query):
         try:
             query = query.lower()
@@ -403,53 +387,30 @@ class PropertyRAG:
         return query_location
 
     def get_model_predictions(self, query_text, numeric_features):
-        """
-        Produce combined prediction from text & numeric models.
-        Supports backward compatibility: if numeric_model expects 9 inputs (old model with Harga_Normalized leakage),
-        we will insert a placeholder 0 at index 5. Otherwise use 8-feature clean schema.
-
-        Current clean feature order (len=8):
-        0 Kamar_Normalized
-        1 WC_Normalized
-        2 Parkir_Normalized
-        3 Luas_Tanah_Normalized
-        4 Luas_Bangunan_Normalized
-        5 Harga_per_LuasBangunan
-        6 LuasBangunan_per_LuasTanah
-        7 Kamar_x_WC
-        """
-        # Text features
+        # Generate text features using TF-IDF
         query_tfidf = self.tfidf_vectorizer.transform([query_text]).toarray()
+
+        # Get predictions from both models
         text_pred = self.text_model.predict(query_tfidf)
 
-        model_expected = getattr(self.numeric_model, 'input_shape', (None, None))[1]
-        if model_expected == 9:
-            # Old model: insert placeholder 0 for (removed) Harga_Normalized feature position (after index 4)
-            numeric_input = np.array([
-                numeric_features[0],
-                numeric_features[1],
-                numeric_features[2],
-                numeric_features[3],
-                numeric_features[4],
-                0.0,  # placeholder Harga_Normalized (removed in new training)
-                numeric_features[5],
-                numeric_features[6],
-                numeric_features[7],
-            ])
-        else:
-            # New clean model (8 features)
-            numeric_input = np.array([
-                numeric_features[0],
-                numeric_features[1],
-                numeric_features[2],
-                numeric_features[3],
-                numeric_features[4],
-                numeric_features[5],
-                numeric_features[6],
-                numeric_features[7],
-            ])
+        # Sesuaikan dengan 9 fitur seperti saat training
+        numeric_input = np.array(
+            [
+                numeric_features[0],  # Kamar_Normalized
+                numeric_features[1],  # WC_Normalized
+                numeric_features[2],  # Parkir_Normalized
+                numeric_features[3],  # Luas_Tanah_Normalized
+                numeric_features[4],  # Luas_Bangunan_Normalized
+                0,  # Harga_Normalized (bisa diisi 0 atau nilai default)
+                numeric_features[5],  # Harga/Luas_Bangunan
+                numeric_features[6],  # Luas_Bangunan/Luas_Tanah
+                numeric_features[7],  # Kamar * WC
+            ]
+        )
 
         numeric_pred = self.numeric_model.predict(numeric_input.reshape(1, -1))
+
+        # Combine predictions (you can adjust the weights)
         combined_pred = 0.2 * text_pred + 0.8 * numeric_pred
         return combined_pred
 
@@ -465,11 +426,7 @@ class PropertyRAG:
         # Minimum threshold untuk relevance score
         MIN_RELEVANCE_THRESHOLD = 0.15
 
-    # Calculate query_numeric_features dengan nilai default
-    # Urutan HARUS cocok dengan skema baru (8 fitur):
-    # 0 Kamar_Normalized, 1 WC_Normalized, 2 Parkir_Normalized, 3 Luas_Tanah_Normalized,
-    # 4 Luas_Bangunan_Normalized, 5 Harga_per_LuasBangunan (placeholder heuristik),
-    # 6 LuasBangunan_per_LuasTanah, 7 Kamar_x_WC
+        # Calculate query_numeric_features dengan nilai default
         query_numeric_features = np.array(
             [
                 kamar / 5 if kamar is not None else 0.5,  # Default value 0.5

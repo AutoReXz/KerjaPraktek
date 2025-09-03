@@ -1,8 +1,0 @@
-Kamar_N
-WC_N
-Parkir_N
-Luas_Tanah_N
-Luas_Bangunan_N
-Harga_per_LuasBangunan
-LuasBangunan_per_LuasTanah
-Kamar_x_WC
